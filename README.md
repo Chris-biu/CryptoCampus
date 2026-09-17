@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/cryptocampus-logo.png" alt="CryptoCampus 标志" width="180">
+</p>
+
 # CryptoCampus
 
 CryptoCampus 是面向桌面浏览器的校园密码应用课程项目。项目将身份与证书、密信快传、匿名树洞、匿名投票、文件验真、密码透视及管理治理串成一套可演示的 Web 应用；前端、FastAPI 服务端、密码引擎桥接层和部署脚本均在本仓库中。它是教学与验收项目，不应未经安全评估直接用于生产业务。
