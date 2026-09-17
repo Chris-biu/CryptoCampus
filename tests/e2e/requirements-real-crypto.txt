@@ -1,0 +1,2 @@
+# Optional local desktop regression runner; keep out of the fast app CI image.
+playwright==1.61.0

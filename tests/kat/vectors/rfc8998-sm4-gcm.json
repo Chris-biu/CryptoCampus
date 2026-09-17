@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "algorithm": "SM4-GCM",
+  "source": {
+    "publisher": "RFC Editor",
+    "document": "RFC 8998 Appendix A.1",
+    "url": "https://www.rfc-editor.org/rfc/rfc8998.txt",
+    "source_sha256": "de2b7d694de1981464dacb6c3e5aaf45583a26e702fe523f25be4fd28eb85d78",
+    "retrieved_at": "2026-09-15"
+  },
+  "cases": [
+    {
+      "id": "RFC8998-A.1-SM4-GCM",
+      "key_hex": "0123456789abcdeffedcba9876543210",
+      "nonce_hex": "00001234567800000000abcd",
+      "aad_hex": "feedfacedeadbeeffeedfacedeadbeefabaddad2",
+      "plaintext_hex": "aaaaaaaaaaaaaaaabbbbbbbbbbbbbbbbccccccccccccccccddddddddddddddddeeeeeeeeeeeeeeeeffffffffffffffffeeeeeeeeeeeeeeeeaaaaaaaaaaaaaaaa",
+      "ciphertext_hex": "17f399f08c67d5ee19d0dc9969c4bb7d5fd46fd3756489069157b282bb200735d82710ca5c22f0ccfa7cbf93d496ac15a56834cbcf98c397b4024a2691233b8d",
+      "tag_hex": "83de3541e4c2b58177e065a9bf7b62ec"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "source": {
+    "publisher": "openHiTLS",
+    "dataset": "openHiTLS SDV SM3 vectors at commit a6b28e09f186dd0402b1236d8b4455842694fce4",
+    "received_at": "2026-09-09",
+    "package_sha256": "8a4c08d1d2073f0dfcc64c2521574804e300ed3c3f352f2ed9bd9e3bf70e01b8"
+  },
+  "artifacts": [
+    {
+      "path": "openhitls-sm3.json",
+      "sha256": "efa3e56b0fd2267884f789589c93502668604d7a7e735113bf555387651532f1",
+      "algorithms": ["SM3"],
+      "provenance": "Normalized without changing values from testcode/sdv/testcase/crypto/sm3/test_suite_sdv_eal_sm3.data in the pinned openHiTLS commit; the upstream source file digest is recorded as source.package_sha256."
+    }
+  ]
+}

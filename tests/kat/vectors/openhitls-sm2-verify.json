@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "algorithm": "SM2-VERIFY",
+  "source": {
+    "repository": "https://gitee.com/openHiTLS/openHiTLS.git",
+    "commit": "a6b28e09f186dd0402b1236d8b4455842694fce4",
+    "path": "testcode/sdv/testcase/crypto/sm2/test_suite_sdv_eal_sm2_sign.data",
+    "source_sha256": "423c57fedf541ea95352fbfa26a26eb41d99cbff5a5f12b1bf0d0f2cd774ef8e",
+    "retrieved_at": "2026-09-15"
+  },
+  "cases": [
+    {
+      "id": "SDV_CRYPTO_SM2_VERIFY_FUNC_TC001-GBT32918.5-2017",
+      "public_key_hex": "0409f9df311e5421a150dd7d161e4bc5c672179fad1833fc076bb08ff356f35020ccea490ce26775a52dc6ea718cc1aa600aed05fbf35e084a6632f6072da9ad13",
+      "digest_hex": "f0b43e94ba45accaace692ed534382eb17e6ab5a19ce7b31f4486fdfc0d28640",
+      "signature_raw_hex": "f5a03b0648d2c4630eeac513e1bb81a15944da3827d5b74143ac7eaceee720b3b1b6aa29df212fd8763182bc0d421ca1bb9038fd1f7f42d4840b69c485bbc1aa"
+    }
+  ]
+}

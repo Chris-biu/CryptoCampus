@@ -1,0 +1,1 @@
+"""CryptoCampus FastAPI application package."""

@@ -1,0 +1,74 @@
+name: cryptocampus
+
+services:
+  server:
+    image: cryptocampus-server:${CRYPTOCAMPUS_VERSION:-dev}
+    build:
+      context: .
+      dockerfile: deploy/server.Dockerfile
+    environment:
+      CRYPTOCAMPUS_CAMPUS_EMAIL_DOMAINS: ${CRYPTOCAMPUS_CAMPUS_EMAIL_DOMAINS:-campus.edu}
+      CRYPTOCAMPUS_DATABASE_URL: sqlite+pysqlite:////var/lib/cryptocampus/cryptocampus.db
+      CRYPTOCAMPUS_DROP_RECIPIENT_USER_ID: ${CRYPTOCAMPUS_DROP_RECIPIENT_USER_ID:-}
+      CRYPTOCAMPUS_DROP_RECIPIENT_SM2_KEY_FILE: ${CRYPTOCAMPUS_DROP_RECIPIENT_SM2_KEY_FILE:-/run/secrets/cryptocampus/drop_recipient_sm2.key}
+      CRYPTOCAMPUS_PLATFORM_CA_MANIFEST_FILE: ${CRYPTOCAMPUS_PLATFORM_CA_MANIFEST_FILE:-/run/secrets/cryptocampus/platform_ca.json}
+      CRYPTOCAMPUS_PLATFORM_CA_CERT_FILE: ${CRYPTOCAMPUS_PLATFORM_CA_CERT_FILE:-/run/secrets/cryptocampus/platform_ca.der}
+      CRYPTOCAMPUS_PLATFORM_CA_KEY_FILE: ${CRYPTOCAMPUS_PLATFORM_CA_KEY_FILE:-/run/secrets/cryptocampus/platform_ca.key}
+      CRYPTOCAMPUS_SEAL_MATERIAL_DIR: ${CRYPTOCAMPUS_SEAL_MATERIAL_DIR:-/run/secrets/cryptocampus/seal_materials}
+      CRYPTOCAMPUS_JWT_SECRET_FILE: ${CRYPTOCAMPUS_JWT_SECRET_FILE:-/run/secrets/cryptocampus/jwt_secret}
+      CRYPTOCAMPUS_HOLE_SIGNER_DIR: ${CRYPTOCAMPUS_HOLE_SIGNER_DIR:-/run/secrets/cryptocampus/hole_signers}
+      CRYPTOCAMPUS_SMTP_HOST: ${CRYPTOCAMPUS_SMTP_HOST:-}
+      CRYPTOCAMPUS_SMTP_PORT: ${CRYPTOCAMPUS_SMTP_PORT:-587}
+      CRYPTOCAMPUS_SMTP_USERNAME: ${CRYPTOCAMPUS_SMTP_USERNAME:-}
+      CRYPTOCAMPUS_SMTP_FROM: ${CRYPTOCAMPUS_SMTP_FROM:-}
+      CRYPTOCAMPUS_SMTP_PASSWORD_FILE: ${CRYPTOCAMPUS_SMTP_PASSWORD_FILE:-/run/secrets/cryptocampus/smtp_password}
+      CRYPTOCAMPUS_ENV: ${CRYPTOCAMPUS_ENV:-production}
+      CRYPTOCAMPUS_ALLOW_DEMO_EMAIL: ${CRYPTOCAMPUS_ALLOW_DEMO_EMAIL:-0}
+      CRYPTOCAMPUS_DEMO_VERIFICATION_CODE: ${CRYPTOCAMPUS_DEMO_VERIFICATION_CODE:-}
+      CRYPTOCAMPUS_VOTE_TALLY_MATERIAL_DIR: ${CRYPTOCAMPUS_VOTE_TALLY_MATERIAL_DIR:-/run/secrets/cryptocampus/vote_tally}
+      CRYPTOCAMPUS_VOTE_SIGNER_DIR: ${CRYPTOCAMPUS_VOTE_SIGNER_DIR:-/var/lib/cryptocampus/vote_signers}
+      LD_LIBRARY_PATH: /opt/cryptocampus/lib
+    expose:
+      - "8000"
+    volumes:
+      - server_data:/var/lib/cryptocampus
+      - type: bind
+        source: ${CRYPTOCAMPUS_SECRETS_DIR:-./deploy/secrets}
+        target: /run/secrets/cryptocampus
+        read_only: true
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/system/status', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+  web:
+    image: cryptocampus-web:${CRYPTOCAMPUS_VERSION:-dev}
+    build:
+      context: .
+      dockerfile: deploy/web.Dockerfile
+    depends_on:
+      server:
+        condition: service_healthy
+    ports:
+      - "${CRYPTOCAMPUS_HTTP_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  server_data:

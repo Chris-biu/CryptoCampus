@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "source": {
+    "publisher": "openHiTLS and RFC Editor",
+    "dataset": "openHiTLS SM2 SDV at a6b28e09 and RFC 8998 Appendix A.1",
+    "received_at": "2026-09-15",
+    "package_sha256": "423c57fedf541ea95352fbfa26a26eb41d99cbff5a5f12b1bf0d0f2cd774ef8e"
+  },
+  "artifacts": [
+    {
+      "path": "openhitls-sm2-verify.json",
+      "sha256": "ef6bc83c6be081bf8636aa43190bf3c760cc3cddd1744f3f34ec9501cb75fb67",
+      "algorithms": ["SM2-VERIFY"],
+      "provenance": "Normalized from the GBT 32918.5-2017 verify vector in openHiTLS testcode/sdv/testcase/crypto/sm2/test_suite_sdv_eal_sm2_sign.data at pinned commit a6b28e09f186dd0402b1236d8b4455842694fce4; e=SM3(ZA||message) is the published vector prehash and the DER signature was losslessly converted to the bridge raw r||s representation."
+    },
+    {
+      "path": "rfc8998-sm4-gcm.json",
+      "sha256": "fd8a0bedbbc1940e048ed469eed5affac80be9638d3f319c1b05e757f3f50f9c",
+      "algorithms": ["SM4-GCM"],
+      "provenance": "Normalized without changing values from RFC 8998 Appendix A.1; the downloaded RFC Editor text digest is recorded inside the artifact."
+    }
+  ]
+}

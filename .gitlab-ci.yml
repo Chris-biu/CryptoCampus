@@ -1,0 +1,308 @@
+stages:
+  - build
+  - test
+  - quality
+  - package
+  - deploy
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS && $CI_PIPELINE_SOURCE == "push"
+      when: never
+    - when: always
+variables:
+  NPM_CONFIG_CACHE: $CI_PROJECT_DIR/.npm
+  PIP_CACHE_DIR: $CI_PROJECT_DIR/.cache/pip
+  OPENHITLS_REF: a6b28e09f186dd0402b1236d8b4455842694fce4
+default:
+  interruptible: true
+.run_app_changes:
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH || $CI_COMMIT_TAG || $CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "web"
+    - changes:
+        - web/**/*
+        - server/**/*
+        - bridge/**/*
+        - hitls-bridge/**/*
+        - tests/integration/**/*
+        - tests/security/**/*
+        - tests/e2e/**/*
+        - tests/requirements.txt
+        - tests/ci/**/*
+        - .gitlab-ci.yml
+        - docs/api/openapi.yaml
+        - compose.yaml
+        - deploy/**/*
+    - when: never
+.run_crypto_changes:
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH || $CI_COMMIT_TAG || $CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "web"
+    - changes:
+        - bridge/**/*
+        - hitls-bridge/**/*
+        - tests/kat/**/*
+        - tests/real_crypto/**/*
+    - when: never
+ci_meta_verify:
+  stage: build
+  image: docker:29-cli
+  # Runner setup, artifact upload and cleanup also need time beyond the script.
+  # Pipeline 3051 passed every check, then hit the old 2m limit during cleanup.
+  timeout: 5m
+  variables:
+    RUNNER_SCRIPT_TIMEOUT: 3m
+  script:
+    - mkdir -p ci-reports/deployment
+    - for job in app_verify crypto_verify ci_meta_verify image_package deploy_demo; do grep -q "^$job:" .gitlab-ci.yml; done
+    - docker compose --env-file .env.example config --quiet
+    - docker compose --env-file .env.example config > ci-reports/deployment/compose.resolved.yaml
+    - test ! -e .env
+    - test -z "$(find deploy/runtime/lib -type f ! -name .gitkeep -print -quit)"
+    - test -z "$(find deploy/secrets -type f ! -name .gitkeep -print -quit)"
+    - |-
+      {
+        echo "CryptoCampus test surface audit"
+        for path in server/tests tests/integration tests/security tests/e2e tests/kat tests/real_crypto; do
+          test -e "$path" || { echo "missing required test surface: $path"; exit 1; }
+          echo "$path: configured"
+        done
+      } | tee ci-reports/test-surfaces.txt
+  artifacts:
+    when: always
+    expire_in: 7 days
+    paths:
+      - ci-reports/deployment/
+      - ci-reports/test-surfaces.txt
+app_verify:
+  extends: .run_app_changes
+  stage: test
+  image:
+    name: mcr.microsoft.com/playwright:v1.63.0-noble
+    pull_policy: if-not-present
+  timeout: 20m
+  variables:
+    PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+  cache:
+    key:
+      files:
+        - web/package-lock.json
+        - tests/e2e/package-lock.json
+      prefix: app-v2
+    paths:
+      - .npm/
+      - .cache/pip/
+  before_script:
+    - apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 python3-venv
+    - python3 -m venv .ci-venv
+    - .ci-venv/bin/python -m pip install --disable-pip-version-check -r tests/requirements.txt "pytest-cov>=5,<7" "ruff==0.13.0"
+    - npm --prefix web ci --prefer-offline --no-audit
+    - npm --prefix tests/e2e ci --prefer-offline --no-audit
+    - mkdir -p server/reports ci-reports/integration ci-reports/security
+  script:
+    - npm --prefix web run lint
+    - npm --prefix web run test:ci
+    - npm --prefix web run check:api
+    - npm --prefix web run build
+    - python3 -m compileall -q server/app
+    - .ci-venv/bin/python -m ruff check --select E9,F63,F7,F82 server/app server/tests tests
+    - |-
+      cd server
+      # File-backed SQLite fixtures otherwise fsync thousands of schema writes
+      # through the shared Runner disk. Move only pytest temp files, not uploads.
+      ../.ci-venv/bin/python ../tests/ci/run_pytest.py -v --cov=app --cov-fail-under=80 --cov-report=term-missing --cov-report=xml:reports/coverage.xml --junitxml=reports/junit.xml
+      # Also exercise disk-backed reopen, migrations and concurrent transactions.
+      ../.ci-venv/bin/python -m pytest tests/test_database.py tests/test_quota_concurrency.py -v --durations=10 --junitxml=reports/storage-junit.xml
+      cd "$CI_PROJECT_DIR"
+    - PYTHONPATH="$CI_PROJECT_DIR/server" .ci-venv/bin/python -m pytest tests/integration -v --junitxml=ci-reports/integration/junit.xml
+    - PYTHONPATH="$CI_PROJECT_DIR/server" .ci-venv/bin/python -m pytest tests/security -v --junitxml=ci-reports/security/junit.xml
+    - .ci-venv/bin/python tests/security/sensitive_scan.py ci-reports/security server/reports web/coverage
+    - |-
+      cd tests/e2e
+      E2E_PYTHON="$CI_PROJECT_DIR/.ci-venv/bin/python" npm test
+  coverage: /TOTAL\s+\d+\s+\d+\s+(\d+(?:\.\d+)?%)/
+  artifacts:
+    when: always
+    expire_in: 7 days
+    reports:
+      junit:
+        - web/coverage/junit.xml
+        - server/reports/junit.xml
+        - server/reports/storage-junit.xml
+        - ci-reports/integration/junit.xml
+        - ci-reports/security/junit.xml
+        - tests/e2e/test-results/junit.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: server/reports/coverage.xml
+    paths:
+      - web/coverage/
+      - web/dist/
+      - server/reports/
+      - ci-reports/integration/
+      - ci-reports/security/
+      - tests/e2e/playwright-report/
+      - tests/e2e/test-results/
+crypto_verify:
+  extends: .run_crypto_changes
+  stage: test
+  image: ubuntu:24.04
+  timeout: 20m
+  cache:
+    key: openhitls-a6b28e09-v2
+    paths:
+      - .cache/openhitls/
+      - .cache/pip/
+  before_script:
+    - apt-get update
+    - DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential cmake git python3 python3-venv libssl-dev ca-certificates
+    - update-ca-certificates
+    - export GIT_SSL_NO_VERIFY=1
+    - |-
+      export OPENHITLS_DIR="$CI_PROJECT_DIR/.cache/openhitls"
+      if [ ! -d "$OPENHITLS_DIR/.git" ]; then
+        git clone --filter=blob:none --no-checkout https://gitee.com/openHiTLS/openHiTLS.git "$OPENHITLS_DIR" ||
+        git clone --filter=blob:none --no-checkout https://github.com/openHiTLS/openHiTLS.git "$OPENHITLS_DIR" ||
+        git clone --filter=blob:none --no-checkout https://gitcode.com/openhitls/openhitls.git "$OPENHITLS_DIR"
+      fi
+      git -C "$OPENHITLS_DIR" cat-file -e "$OPENHITLS_REF^{commit}" 2>/dev/null ||
+        git -C "$OPENHITLS_DIR" fetch --depth 1 origin "$OPENHITLS_REF"
+      git -C "$OPENHITLS_DIR" checkout --detach "$OPENHITLS_REF"
+    - cmake -S "$CI_PROJECT_DIR/.cache/openhitls" -B "$CI_PROJECT_DIR/.cache/openhitls/build"
+    - cmake --build "$CI_PROJECT_DIR/.cache/openhitls/build" --parallel 2
+    - python3 -m venv .ci-kat-venv
+    - .ci-kat-venv/bin/python -m pip install --disable-pip-version-check -r server/requirements.txt
+    - mkdir -p ci-reports/kat
+  script:
+    - export OPENHITLS_DIR="$CI_PROJECT_DIR/.cache/openhitls"
+    - cmake -S bridge -B bridge/build -DBUILD_TESTING=ON -DOPENHITLS_ROOT="$OPENHITLS_DIR"
+    - cmake --build bridge/build --parallel 2
+    - ctest --test-dir bridge/build --output-on-failure
+    - for manifest in tests/kat/vectors/manifest*.json; do .ci-kat-venv/bin/python tests/kat/verify_manifest.py "$manifest"; done
+    - export CC_BRIDGE_LIBRARY="$CI_PROJECT_DIR/bridge/build/libcc_bridge.so"
+    - export LD_LIBRARY_PATH="$OPENHITLS_DIR/build:$CI_PROJECT_DIR/bridge/build:$LD_LIBRARY_PATH"
+    - PYTHONPATH="$CI_PROJECT_DIR/server" .ci-kat-venv/bin/python -m pytest tests/kat tests/real_crypto -v --junitxml=ci-reports/kat/junit.xml
+  artifacts:
+    when: always
+    expire_in: 7 days
+    reports:
+      junit: ci-reports/kat/junit.xml
+    paths:
+      - ci-reports/kat/
+      - bridge/build/libcc_bridge.so*
+      - .cache/openhitls/build/libhitls_crypto.so*
+      - .cache/openhitls/build/libhitls_bsl.so*
+image_package:
+  stage: package
+  image: docker:29-cli
+  services:
+    - name: docker:29-dind
+      alias: docker
+      command:
+        - "--tls=false"
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    CRYPTOCAMPUS_VERSION: $CI_COMMIT_SHORT_SHA
+  dependencies: []
+  rules:
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: true
+    - if: $CI_PIPELINE_SOURCE == "web"
+      when: manual
+      allow_failure: true
+    - when: never
+  before_script:
+    - docker info
+    - docker compose version
+  script:
+    - mkdir -p ci-reports/package
+    - sed "s/^CRYPTOCAMPUS_VERSION=.*/CRYPTOCAMPUS_VERSION=$CI_COMMIT_SHORT_SHA/" .env.example > ci-reports/package/.env
+    - docker compose --env-file ci-reports/package/.env config --quiet
+    - docker compose --env-file ci-reports/package/.env build
+    - docker image save $(docker compose --env-file ci-reports/package/.env config --images) | gzip -1 > ci-reports/package/images.tar.gz
+    - cp compose.yaml ci-reports/package/
+    - cp deploy/README.md ci-reports/package/README.md
+    - printf '%s\n' "$CI_COMMIT_SHA" > ci-reports/package/REVISION
+    - cd ci-reports/package && sha256sum images.tar.gz > SHA256SUMS
+  artifacts:
+    expire_in: 3 days
+    paths:
+      - ci-reports/package/
+  timeout: 20m
+deploy_demo:
+  stage: deploy
+  image: alpine:3.20
+  needs:
+    - job: image_package
+      artifacts: true
+      optional: true
+  resource_group: demo
+  environment:
+    name: demo
+  before_script:
+    - apk add --no-cache openssh-client
+    - eval $(ssh-agent -s)
+    - printf '%s' "$DEMO_SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - install -d -m 700 ~/.ssh
+    - printf '%s\n' "$DEMO_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+    - chmod 600 ~/.ssh/known_hosts
+  script:
+    - test -n "$DEMO_HOST" && test -n "$DEMO_USER" && test -n "$DEMO_PATH"
+    - release_path="$DEMO_PATH/releases/$CI_COMMIT_SHA"
+    - ssh "$DEMO_USER@$DEMO_HOST" "mkdir -p '$release_path/deploy/secrets'"
+    - scp ci-reports/package/compose.yaml ci-reports/package/.env ci-reports/package/images.tar.gz ci-reports/package/SHA256SUMS ci-reports/package/REVISION "$DEMO_USER@$DEMO_HOST:$release_path/"
+    - ssh "$DEMO_USER@$DEMO_HOST" "cd '$release_path' && sha256sum -c SHA256SUMS && gzip -dc images.tar.gz | docker image load && docker compose --env-file .env up -d --no-build --wait"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      exists:
+        - compose.yaml
+        - .env.example
+        - deploy/server.Dockerfile
+        - deploy/web.Dockerfile
+      when: manual
+    - when: never
+  timeout: 10m
+wasm_client_verify:
+  stage: test
+  image: ubuntu:24.04
+  timeout: 30m
+  allow_failure: false
+  cache:
+    key: openhitls-wasm-a6b28e09-v1
+    paths:
+      - .cache/openhitls/
+  before_script:
+    - apt-get update
+    - DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential cmake git ca-certificates emscripten
+    - update-ca-certificates
+    - export GIT_SSL_NO_VERIFY=1
+    - |-
+      export OPENHITLS_DIR="$CI_PROJECT_DIR/.cache/openhitls"
+      if [ ! -d "$OPENHITLS_DIR/.git" ]; then
+        git clone --filter=blob:none --no-checkout https://gitee.com/openHiTLS/openHiTLS.git "$OPENHITLS_DIR" ||
+        git clone --filter=blob:none --no-checkout https://github.com/openHiTLS/openHiTLS.git "$OPENHITLS_DIR" ||
+        git clone --filter=blob:none --no-checkout https://gitcode.com/openhitls/openhitls.git "$OPENHITLS_DIR"
+      fi
+      git -C "$OPENHITLS_DIR" cat-file -e "$OPENHITLS_REF^{commit}" 2>/dev/null ||
+        git -C "$OPENHITLS_DIR" fetch --depth 1 origin "$OPENHITLS_REF"
+      git -C "$OPENHITLS_DIR" checkout --detach "$OPENHITLS_REF"
+  script:
+    - export OPENHITLS_ROOT="$CI_PROJECT_DIR/.cache/openhitls"
+    - emcc --version | head -n 2
+    - bash bridge/wasm/build.sh
+    - ls -la bridge/wasm/dist/
+  artifacts:
+    when: always
+    expire_in: 7 days
+    paths:
+      - bridge/wasm/dist/
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH || $CI_COMMIT_TAG || $CI_PIPELINE_SOURCE == "web"
+    - changes:
+        - bridge/**/*
+        - .gitlab-ci.yml
+    - when: never

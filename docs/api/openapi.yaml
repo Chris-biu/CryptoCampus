@@ -1,0 +1,2593 @@
+openapi: 3.1.0
+info:
+  title: CryptoCampus API
+  version: 1.0.0
+  description: |
+    团队 01 的 HTTP 接口唯一机器可读契约。所有业务接口以 /api/v1 为前缀。
+    修改字段、类型、错误码或权限前，必须先评审本文件。
+x-course-scope:
+  core: FR-01 至 FR-11 的课程功能
+  advanced: 安全聊天、ML-DSA、PDF 附加签章页、公平盲签名仅按课程选做能力标注
+  later-production: PostgreSQL、Redis、对象存储、任务队列与可观测性不进入本契约
+x-fr-coverage:
+  FR-01: ["/system/status", "/auth/register/request-code", "/auth/register", "/auth/login", "/auth/refresh", "/auth/logout"]
+  FR-02: ["/me", "/me/pqc-mode", "/me/keyring", "/me/certificate/verify", "/me/keyring/export", "/me/keyring/import", "/me/keyring/rotate"]
+  FR-03: ["/drops/text", "/drops/file"]
+  FR-04: ["/drops/{code}", "/drops/{code}/extract", "/me/notifications"]
+  FR-05: ["/hole/posts", "/hole/credentials", "/hole/credentials/commitments", "/hole/credentials/verify", "/hole/posts/{post_id}/comments", "/hole/posts/{post_id}/likes", "/hole/revocations", "/admin/fair-blind/reveal-requests", "/admin/fair-blind/reveal-requests/{reveal_request_id}/approve"]
+  FR-06: ["/votes", "/votes/{vote_id}", "/votes/{vote_id}/credentials/commitments", "/votes/{vote_id}/credentials", "/votes/{vote_id}/ballots", "/votes/{vote_id}/results", "/votes/{vote_id}/results/verify", "/votes/{vote_id}/audit"]
+  FR-07: ["/seals", "/seals/{seal_id}", "/seals/{seal_id}/sidecar", "/verifications"]
+  FR-08: ["/chat/sessions", "/chat/sessions/{chat_session_id}/messages", "/chat/ws"]
+  FR-09: ["/inspect/records", "/inspect/records/{record_id}", "/inspect/records/{record_id}/report", "/inspect/experiments", "/inspect/tlcp/handshake"]
+  FR-10: ["/admin/engine", "/admin/providers/reload", "/admin/benchmarks", "/admin/benchmarks/{benchmark_id}", "/admin/audit/export", "/admin/hole/posts/{post_id}/withdraw", "/admin/drops/{code}/destroy", "/admin/votes/{vote_id}/audit-flags"]
+  FR-11: ["/me", "/me/password", "/me/keyring", "/me/certificate/verify", "/me/keyring/export", "/me/keyring/import", "/me/keyring/rotate", "/me/sessions", "/me/sessions/{session_id}", "/me/quotas", "/me/account", "/admin/users/{user_id}/quotas/reset", "/admin/users/{user_id}/status"]
+x-time-format: RFC 3339 date-time，必须携带时区偏移；服务端统一按 UTC 存储
+x-file-upload-limits:
+  drop_file_bytes: 104857600
+  seal_and_verify: 课程材料未规定固定字节数；部署限制必须通过 413 与中文错误返回
+servers:
+  - url: /api/v1
+    description: 当前部署
+tags:
+  - name: System
+  - name: Auth
+  - name: Me
+  - name: Drops
+  - name: Hole
+  - name: Votes
+  - name: Verify
+  - name: Chat
+  - name: Inspect
+  - name: Admin
+
+paths:
+  /system/status:
+    get:
+      tags: [System]
+      operationId: getSystemStatus
+      summary: 获取后端、密码引擎和 Provider 状态
+      x-required-roles: [guest, student, admin, teacher]
+      x-jwt: false
+      x-sensitive-fields: []
+      security: []
+      responses:
+        "200":
+          description: 系统状态
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemStatus"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /auth/register/request-code:
+    post:
+      tags: [Auth]
+      operationId: requestRegistrationCode
+      summary: 请求校园邮箱验证码
+      x-required-roles: [guest]
+      x-jwt: false
+      x-sensitive-fields: [email, verification_code]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email]
+              properties:
+                email:
+                  $ref: "#/components/schemas/Email"
+      responses:
+        "202":
+          description: 已接受；无论邮箱是否已注册均返回相同结构
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Accepted"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /auth/register:
+    post:
+      tags: [Auth]
+      operationId: register
+      summary: 注册并生成密钥环和用户证书
+      x-required-roles: [guest]
+      x-jwt: false
+      x-sensitive-fields: [password, verification_code, private_key, kek]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: 注册成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSession"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      summary: 登录并解锁会话密钥缓存
+      x-required-roles: [guest]
+      x-jwt: false
+      x-sensitive-fields: [password, access_token, refresh_token, private_key, kek]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: 登录成功；refresh token 通过 HttpOnly Cookie 设置
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSession"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      operationId: refreshSession
+      summary: 使用 HttpOnly refresh cookie 轮换会话
+      x-required-roles: [student, admin, teacher]
+      x-jwt: false
+      x-sensitive-fields: [refresh_token, access_token]
+      security:
+        - refreshCookie: []
+      responses:
+        "200":
+          description: 轮换成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSession"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      operationId: logout
+      summary: 吊销当前 refresh token
+      x-required-roles: [student, admin, teacher]
+      x-jwt: false
+      x-sensitive-fields: [refresh_token]
+      security:
+        - refreshCookie: []
+      responses:
+        "204":
+          description: 已退出
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /me:
+    get:
+      tags: [Me]
+      operationId: getMe
+      summary: 获取当前用户
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [email]
+      responses:
+        "200":
+          description: 当前用户
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /me/password:
+    patch:
+      tags: [Me]
+      operationId: changePassword
+      summary: 验证旧口令并重新加密私钥
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [current_password, new_password, private_key, kek]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [current_password, new_password]
+              properties:
+                current_password: { type: string, minLength: 1, writeOnly: true }
+                new_password: { type: string, minLength: 10, maxLength: 128, pattern: "^(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9]).{10,128}$", writeOnly: true }
+      responses:
+        "204": { description: 修改成功 }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /me/pqc-mode:
+    patch:
+      tags: [Me]
+      operationId: updatePqcMode
+      summary: 更新全局抗量子模式偏好
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+      responses:
+        "200":
+          description: 更新后的状态
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [enabled]
+                properties:
+                  enabled: { type: boolean }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /me/keyring:
+    get:
+      tags: [Me]
+      operationId: getKeyring
+      summary: 获取密钥指纹和证书状态，不返回私钥
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [private_key, kek]
+      responses:
+        "200":
+          description: 密钥环摘要
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KeyringSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /me/certificate/verify:
+    get:
+      tags: [Me]
+      operationId: verifyOwnCertificate
+      summary: 使用平台 CA 和最新 CRL 验证当前用户证书链
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      responses:
+        "200":
+          description: 当前用户证书链验证结果
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CertificateVerificationResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /me/keyring/rotate:
+    post:
+      tags: [Me]
+      operationId: rotateKeyring
+      summary: 二次口令确认后轮换密钥并吊销旧证书
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [password, private_key, kek]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [password, acknowledge_inflight_loss]
+              properties:
+                password: { type: string, writeOnly: true }
+                acknowledge_inflight_loss: { const: true }
+      responses:
+        "200":
+          description: 新密钥环摘要
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KeyringSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /me/sessions:
+    get:
+      tags: [Me]
+      operationId: listSessions
+      summary: 获取登录设备列表
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [ip]
+      responses:
+        "200":
+          description: 会话列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/DeviceSession" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /me/sessions/{session_id}:
+    delete:
+      tags: [Me]
+      operationId: revokeSession
+      summary: 远程登出指定设备
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [refresh_token]
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "204": { description: 已吊销 }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /me/quotas:
+    get:
+      tags: [Me]
+      operationId: getQuotas
+      summary: 获取当前 UTC 日的可展示服务额度
+      description: 仅返回按日计数的树洞凭证、互动凭证和密信创建额度；投票凭证按 vote_id 计数，不适合汇总为单一当日额度。
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: []
+      responses:
+        "200":
+          description: 额度
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QuotaPage" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /drops/text:
+    post:
+      tags: [Drops]
+      operationId: createTextDrop
+      summary: 创建文字密信
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [content, access_password, session_key, private_key]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTextDropRequest"
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateDropResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /drops/file:
+    post:
+      tags: [Drops]
+      operationId: createFileDrop
+      summary: 创建文件密信，最大 100 MiB
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [file, access_password, session_key, private_key]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [file, ttl_policy, pqc_mode]
+              properties:
+                file: { type: string, format: binary }
+                ttl_policy: { $ref: "#/components/schemas/TtlPolicy" }
+                pqc_mode: { type: boolean }
+                access_password: { type: string, minLength: 1, maxLength: 128, writeOnly: true }
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateDropResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /drops/{code}:
+    get:
+      tags: [Drops]
+      operationId: getDropMetadata
+      summary: 公开获取密信元数据，不返回密文或明文
+      x-required-roles: [guest, student, admin, teacher]
+      x-jwt: false
+      x-sensitive-fields: [ciphertext, plaintext, session_key]
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/DropCode"
+      responses:
+        "200":
+          description: 元数据
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DropMetadata"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /drops/{code}/extract:
+    post:
+      tags: [Drops]
+      operationId: extractDrop
+      summary: 使用提取码和可选口令解密密信
+      x-required-roles: [guest, student, admin, teacher]
+      x-jwt: false
+      x-sensitive-fields: [access_code, access_password, plaintext, session_key, private_key]
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/DropCode"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [access_code]
+              properties:
+                access_code: { type: string, pattern: "^[A-Z0-9-]{8,32}$", writeOnly: true }
+                access_password: { type: string, maxLength: 128, writeOnly: true }
+      responses:
+        "200":
+          description: 文字密信或短内容
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExtractedDrop" }
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /hole/posts:
+    get:
+      tags: [Hole]
+      operationId: listHolePosts
+      summary: 浏览树洞帖子
+      x-required-roles: [guest, student, admin, teacher]
+      x-jwt: false
+      x-sensitive-fields: [author_identity]
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: 帖子列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HolePostPage"
+    post:
+      tags: [Hole]
+      operationId: createHolePost
+      summary: 消费一次性盲签名凭证发布帖子
+      x-required-roles: [guest, student, admin, teacher]
+      x-jwt: false
+      x-sensitive-fields: [author_identity]
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateHolePostRequest"
+      responses:
+        "201":
+          description: 已发布
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HolePost" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /hole/credentials:
+    post:
+      tags: [Hole]
+      operationId: issueHoleCredential
+      summary: 对客户端提交的盲化消息签发匿名凭证
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [user_id, unblinded_credential, blinding_factor]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BlindCredentialRequest"
+      responses:
+        "201":
+          description: 盲签名结果
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlindCredentialResponse" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /hole/credentials/commitments:
+    post:
+      tags: [Hole]
+      operationId: createHoleCommitment
+      summary: 申领盲签名服务端一次性随机承诺 (ADR-0001)
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [k_random, server_private_key]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BlindCommitmentRequest"
+      responses:
+        "201":
+          description: 服务端一次性承诺点与有效期
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlindCommitmentResponse" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /votes:
+    get:
+      tags: [Votes]
+      operationId: listVotes
+      summary: 获取可见投票
+      x-required-roles: [guest, student, admin, teacher]
+      x-jwt: false
+      x-sensitive-fields: [voter_identity]
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: 投票列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VotePage"
+    post:
+      tags: [Votes]
+      operationId: createVote
+      summary: 创建投票
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateVoteRequest" }
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Vote" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /votes/{vote_id}/credentials:
+    post:
+      tags: [Votes]
+      operationId: issueVoteCredential
+      summary: 每位用户每场投票签发一次盲化选票凭证
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [user_id, ballot_choice, unblinded_credential, blinding_factor]
+      parameters:
+        - $ref: "#/components/parameters/VoteId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BlindCredentialRequest" }
+      responses:
+        "201":
+          description: 盲签名结果
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlindCredentialResponse" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /votes/{vote_id}/credentials/commitments:
+    post:
+      tags: [Votes]
+      operationId: createVoteBlindCommitment
+      summary: 为单场投票申领一次性盲签承诺
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [k_random, server_private_key]
+      parameters:
+        - $ref: "#/components/parameters/VoteId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BlindCommitmentRequest" }
+      responses:
+        "201":
+          description: 本场投票的一次性承诺、公钥与有效期
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlindCommitmentResponse" }
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /votes/{vote_id}/ballots:
+    post:
+      tags: [Votes]
+      operationId: submitBallot
+      summary: 匿名提交并消费一次性选票
+      x-required-roles: [guest, student, admin, teacher]
+      x-jwt: false
+      x-sensitive-fields: [voter_identity]
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/VoteId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SubmitBallotRequest" }
+      responses:
+        "201":
+          description: 已计票
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Accepted" }
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /votes/{vote_id}/results:
+    get:
+      tags: [Votes]
+      operationId: getVoteResults
+      summary: 获取计票结果及计票台签名
+      x-required-roles: [guest, student, admin, teacher]
+      x-jwt: false
+      x-sensitive-fields: [voter_identity]
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/VoteId"
+      responses:
+        "200":
+          description: 已签名结果
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VoteResult" }
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /seals:
+    post:
+      tags: [Verify]
+      operationId: createSeal
+      summary: 对文件摘要和时间戳签章
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [file, private_key]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [file, seal_profile, pqc_mode, output_format]
+              properties:
+                file: { type: string, format: binary }
+                seal_profile: { type: string, enum: [personal, department, academic] }
+                pqc_mode: { type: boolean }
+                output_format:
+                  type: string
+                  enum: [sidecar, qr, pdf_signature_page]
+                  description: pdf_signature_page 为课程进阶能力
+      responses:
+        "201":
+          description: 侧车签章元数据
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Seal" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+
+  /verifications:
+    post:
+      tags: [Verify]
+      operationId: verifyFile
+      summary: 验证文件摘要、签名、证书链、时间戳和吊销状态
+      x-required-roles: [guest, student, admin, teacher]
+      x-jwt: false
+      x-sensitive-fields: [file]
+      security: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [file, seal]
+              properties:
+                file: { type: string, format: binary }
+                seal: { type: string, format: binary }
+      responses:
+        "200":
+          description: 五步验证结果；验证失败仍返回 200 和 valid=false
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VerificationResult" }
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /inspect/records/{record_id}:
+    get:
+      tags: [Inspect]
+      operationId: getInspectRecord
+      summary: 获取脱敏密码透视记录
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [plaintext, private_key, kek, session_key, full_intermediate_values]
+      parameters:
+        - name: record_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 透视记录
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InspectRecord" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /admin/engine:
+    get:
+      tags: [Admin]
+      operationId: getEngineDetails
+      summary: 获取引擎与 Provider 详细状态
+      x-required-roles: [admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: []
+      responses:
+        "200":
+          description: 引擎状态
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SystemStatus" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /admin/benchmarks:
+    post:
+      tags: [Admin]
+      operationId: runBenchmark
+      summary: 创建异步性能基准任务
+      x-required-roles: [admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [iterations]
+              properties:
+                iterations: { type: integer, minimum: 10, maximum: 10000, default: 1000 }
+                include_pqc: { type: boolean, default: true }
+      responses:
+        "202":
+          description: 已创建任务
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Job" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /me/keyring/export:
+    post:
+      tags: [Me]
+      operationId: exportKeyringBackup
+      summary: 导出口令加密的 PEM 密钥备份
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [password, private_key, backup_file]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [password]
+              properties:
+                password: { type: string, minLength: 1, maxLength: 128, writeOnly: true }
+      responses:
+        "200":
+          description: 口令加密的 PEM 文件
+          content:
+            application/x-pem-file:
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /me/keyring/import:
+    post:
+      tags: [Me]
+      operationId: importKeyringBackup
+      summary: 导入口令加密的 PEM 备份并恢复密钥环
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [password, backup_file, private_key, kek]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [backup, password]
+              properties:
+                backup: { type: string, format: binary }
+                password: { type: string, minLength: 1, maxLength: 128, writeOnly: true }
+      responses:
+        "200":
+          description: 恢复后的密钥环摘要
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KeyringSummary" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+
+  /me/notifications:
+    get:
+      tags: [Me]
+      operationId: listNotifications
+      summary: 获取本人站内通知，包括密信提取通知
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [drop_plaintext]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: 通知分页列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NotificationPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /me/account:
+    delete:
+      tags: [Me]
+      operationId: deleteAccount
+      summary: 注销本人账号并执行课程规定的数据删除与保留策略
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [password, private_key, refresh_token]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [password, confirm]
+              properties:
+                password: { type: string, minLength: 1, maxLength: 128, writeOnly: true }
+                confirm: { const: DELETE_MY_ACCOUNT }
+      responses:
+        "202":
+          description: 注销流程已接受
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Accepted" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /hole/credentials/verify:
+    post:
+      tags: [Hole]
+      operationId: verifyHoleCredential
+      summary: 公开验证树洞、评论或点赞凭证
+      x-required-roles: [guest, student, admin, teacher]
+      x-jwt: false
+      x-sensitive-fields: [author_identity]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CredentialProof" }
+      responses:
+        "200":
+          description: 公开验签结果
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CredentialVerification" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /hole/posts/{post_id}/comments:
+    get:
+      tags: [Hole]
+      operationId: listHoleComments
+      summary: 公开浏览帖子评论
+      x-required-roles: [guest, student, admin, teacher]
+      x-jwt: false
+      x-sensitive-fields: [author_identity]
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/PostId"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: 评论列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HoleCommentPage" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [Hole]
+      operationId: createHoleComment
+      summary: 消费独立小额匿名凭证发布评论
+      x-required-roles: [guest, student, admin, teacher]
+      x-jwt: false
+      x-sensitive-fields: [author_identity]
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/PostId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateHoleCommentRequest" }
+      responses:
+        "201":
+          description: 评论已发布
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HoleComment" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /hole/posts/{post_id}/likes:
+    post:
+      tags: [Hole]
+      operationId: likeHolePost
+      summary: 消费独立小额匿名凭证点赞
+      x-required-roles: [guest, student, admin, teacher]
+      x-jwt: false
+      x-sensitive-fields: [author_identity]
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/PostId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [credential]
+              properties:
+                credential: { $ref: "#/components/schemas/CredentialProof" }
+      responses:
+        "201":
+          description: 点赞已记录
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Accepted" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /hole/revocations:
+    get:
+      tags: [Hole]
+      operationId: listHoleRevocations
+      summary: 公开查询 SM3 链式撤销记录
+      x-required-roles: [guest, student, admin, teacher]
+      x-jwt: false
+      x-sensitive-fields: [author_identity]
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: 撤销记录
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RevocationPage" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /votes/{vote_id}:
+    get:
+      tags: [Votes]
+      operationId: getVote
+      summary: 获取单场投票、选项、范围与截止时间
+      x-required-roles: [guest, student, admin, teacher]
+      x-jwt: false
+      x-sensitive-fields: [voter_identity]
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/VoteId"
+      responses:
+        "200":
+          description: 投票详情
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Vote" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /votes/{vote_id}/results/verify:
+    get:
+      tags: [Votes]
+      operationId: verifyVoteResult
+      summary: 公开验证计票结果签名
+      x-required-roles: [guest, student, admin, teacher]
+      x-jwt: false
+      x-sensitive-fields: [voter_identity]
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/VoteId"
+      responses:
+        "200":
+          description: 结果签名验证状态
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SignatureVerification" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /votes/{vote_id}/audit:
+    get:
+      tags: [Votes]
+      operationId: exportVoteAudit
+      summary: 导出不含身份的有效选票序列号与签名审计报告
+      x-required-roles: [guest, student, admin, teacher]
+      x-jwt: false
+      x-sensitive-fields: [voter_identity]
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/VoteId"
+      responses:
+        "200":
+          description: 匿名审计报告
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VoteAuditReport" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /seals/{seal_id}:
+    get:
+      tags: [Verify]
+      operationId: getSeal
+      summary: 通过二维码标识公开获取签章元数据
+      x-required-roles: [guest, student, admin, teacher]
+      x-jwt: false
+      x-sensitive-fields: [source_file]
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/SealId"
+      responses:
+        "200":
+          description: 签章元数据
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Seal" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /seals/{seal_id}/sidecar:
+    get:
+      tags: [Verify]
+      operationId: downloadSealSidecar
+      summary: 下载侧车签章文件
+      x-required-roles: [guest, student, admin, teacher]
+      x-jwt: false
+      x-sensitive-fields: [source_file]
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/SealId"
+      responses:
+        "200":
+          description: 侧车签章文件
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /chat/sessions:
+    get:
+      tags: [Chat]
+      operationId: listChatSessions
+      summary: 获取本人安全聊天会话
+      x-course-priority: advanced
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [message_plaintext, session_key, private_key]
+      responses:
+        "200":
+          description: 会话列表
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/ChatSession" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [Chat]
+      operationId: createChatSession
+      summary: 获取建立 ECDH 或混合会话所需的对端公钥信息
+      x-course-priority: advanced
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [ephemeral_private_key, shared_secret, session_key]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [peer_user_id, pqc_mode]
+              properties:
+                peer_user_id: { type: string, format: uuid }
+                pqc_mode: { type: boolean }
+      responses:
+        "201":
+          description: 会话与脱敏协商材料
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChatSession" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /chat/sessions/{chat_session_id}/messages:
+    get:
+      tags: [Chat]
+      operationId: listEncryptedMessages
+      summary: 获取服务端保存的历史密文与路由元信息
+      x-course-priority: advanced
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [message_plaintext, session_key, private_key]
+      parameters:
+        - $ref: "#/components/parameters/ChatSessionId"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: 密文消息分页
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EncryptedMessagePage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /chat/ws:
+    x-websocket:
+      summary: 实时转发协商帧和加密消息帧；服务端不解密消息
+      x-course-priority: advanced
+      url: /api/v1/chat/ws
+      security: >-
+        Sec-WebSocket-Protocol 必须依次提供 cryptocampus.chat.v1 与
+        auth.b64u.<base64url-no-padding(UTF-8 JWT)>；服务端协商响应只返回
+        cryptocampus.chat.v1，禁止在查询字符串传递或回显 JWT
+      roles: [student, admin, teacher]
+      max-frame-bytes: 131072
+      client-message:
+        $ref: "#/components/schemas/ChatClientFrame"
+      server-message:
+        $ref: "#/components/schemas/ChatServerFrame"
+      close-codes:
+        "1000": 正常关闭
+        "1008": 未认证、越权、序号重放或帧校验失败
+        "1011": 服务端或密码引擎故障
+      sensitive-fields: [message_plaintext, session_key, private_key, shared_secret]
+
+  /inspect/records:
+    get:
+      tags: [Inspect]
+      operationId: listInspectRecords
+      summary: 获取本人密码透视记录
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [plaintext, private_key, kek, session_key, full_intermediate_values]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: 脱敏透视记录分页
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InspectRecordPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /inspect/records/{record_id}/report:
+    get:
+      tags: [Inspect]
+      operationId: exportInspectReport
+      summary: 导出本人操作的脱敏实验报告素材
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [plaintext, private_key, kek, session_key, full_intermediate_values]
+      parameters:
+        - $ref: "#/components/parameters/RecordId"
+      responses:
+        "200":
+          description: Markdown 实验报告素材
+          content:
+            text/markdown:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /inspect/experiments:
+    post:
+      tags: [Inspect]
+      operationId: runCryptoExperiment
+      summary: 运行课程算法试验台或 KAT 回归
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [private_key, session_key, business_plaintext]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ExperimentRequest" }
+      responses:
+        "200":
+          description: 脱敏实验结果
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExperimentResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /inspect/tlcp/handshake:
+    get:
+      tags: [Inspect]
+      operationId: getTlcpHandshakeDemo
+      summary: 获取真实 TLCP 抓包的脱敏报文字段和双证书时序
+      x-required-roles: [student, admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [private_key, premaster_secret, session_key, raw_capture_credentials]
+      responses:
+        "200":
+          description: TLCP 时序数据
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TlcpHandshake" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /admin/users:
+    get:
+      tags: [Admin]
+      operationId: listAdminUsers
+      summary: 查询用户、角色、状态和允许查看的元信息
+      x-required-roles: [admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [password, private_key, auth_hash, salt_a, salt_k, refresh_token]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: 用户分页列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/users/{user_id}/status:
+    patch:
+      tags: [Admin]
+      operationId: updateUserStatus
+      summary: 冻结或解冻用户并记录审计日志
+      x-required-roles: [admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [refresh_token, private_key]
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [status, reason]
+              properties:
+                status: { type: string, enum: [active, frozen] }
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        "200":
+          description: 更新后的用户
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/users/{user_id}/role:
+    patch:
+      tags: [Admin]
+      operationId: updateUserRole
+      summary: 修改角色、吊销旧 Token 并留痕
+      x-required-roles: [admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [refresh_token]
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [role, reason]
+              properties:
+                role: { type: string, enum: [student, admin, teacher] }
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        "200":
+          description: 更新后的用户
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/users/{user_id}/quotas/reset:
+    post:
+      tags: [Admin]
+      operationId: resetUserQuotas
+      summary: 重置用户额度并记录审计日志
+      x-required-roles: [admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: []
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: 重置后的额度
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QuotaPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/hole/posts/{post_id}/withdraw:
+    post:
+      tags: [Admin]
+      operationId: withdrawHolePost
+      summary: 撤下违规帖子并追加链式撤销记录
+      x-required-roles: [admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [author_identity]
+      parameters:
+        - $ref: "#/components/parameters/PostId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        "200":
+          description: 撤销记录
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RevocationEntry" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /admin/drops/{code}/destroy:
+    post:
+      tags: [Admin]
+      operationId: destroyDrop
+      summary: 强制销毁密信密文；管理员不能解密内容
+      x-required-roles: [admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [ciphertext, plaintext, session_key]
+      parameters:
+        - $ref: "#/components/parameters/DropCode"
+      responses:
+        "204": { description: 密文已销毁 }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /admin/votes/{vote_id}/audit-flags:
+    post:
+      tags: [Admin]
+      operationId: flagVoteForAudit
+      summary: 标记异常投票供审计，不改变匿名选票归属
+      x-required-roles: [admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [voter_identity]
+      parameters:
+        - $ref: "#/components/parameters/VoteId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        "201":
+          description: 审计标记已记录
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Accepted" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/inspect-records:
+    get:
+      tags: [Admin]
+      operationId: listInspectRecordMetadata
+      summary: 查询他人透视记录元信息，不返回敏感中间值
+      x-required-roles: [admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [plaintext, private_key, kek, session_key, full_intermediate_values]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: 仅元信息分页
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InspectMetadataPage" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/providers/reload:
+    post:
+      tags: [Admin]
+      operationId: reloadPqcProvider
+      summary: 演示重新加载 PQC Provider
+      x-required-roles: [admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [provider_configuration_secret]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: 重载后的 Provider 状态
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SystemStatus" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /admin/benchmarks/{benchmark_id}:
+    get:
+      tags: [Admin]
+      operationId: getBenchmark
+      summary: 获取均值、P99 和抗量子开销对比
+      x-required-roles: [admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: []
+      parameters:
+        - $ref: "#/components/parameters/BenchmarkId"
+      responses:
+        "200":
+          description: 基准结果
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BenchmarkResult" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /admin/benchmarks/{benchmark_id}/export:
+    get:
+      tags: [Admin]
+      operationId: exportBenchmark
+      summary: 导出已完成的性能基准结果
+      x-required-roles: [admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: []
+      parameters:
+        - $ref: "#/components/parameters/BenchmarkId"
+        - name: format
+          in: query
+          required: true
+          schema: { type: string, enum: [csv, json] }
+      responses:
+        "200":
+          description: CSV 或 JSON 性能基准结果
+          headers:
+            Content-Disposition:
+              description: 下载文件名
+              schema: { type: string }
+          content:
+            text/csv:
+              schema: { type: string }
+            application/json:
+              schema: { $ref: "#/components/schemas/BenchmarkResult" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /admin/audit/export:
+    get:
+      tags: [Admin]
+      operationId: exportAdminAudit
+      summary: 导出经 SM3 链式哈希保护的管理员审计记录
+      x-required-roles: [admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [plaintext, private_key, kek, session_key]
+      parameters:
+        - name: format
+          in: query
+          required: true
+          schema: { type: string, enum: [csv, json] }
+      responses:
+        "200":
+          description: CSV 或 JSON 审计导出
+          content:
+            text/csv:
+              schema: { type: string }
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AuditEntry" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /admin/fair-blind/reveal-requests:
+    post:
+      tags: [Admin]
+      operationId: createFairBlindRevealRequest
+      summary: 创建公平盲签名联合揭示申请
+      description: 课程进阶能力；单个管理员不能完成揭示，且不得用于普通盲签名凭证。
+      x-course-priority: advanced
+      x-required-roles: [admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [revealed_identity, escrow_share, private_key]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [credential_sn, reason]
+              properties:
+                credential_sn: { type: string, pattern: "^[A-Fa-f0-9]{32,}$" }
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        "201":
+          description: 等待第二位管理员批准
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FairBlindRevealRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /admin/fair-blind/reveal-requests/{reveal_request_id}/approve:
+    post:
+      tags: [Admin]
+      operationId: approveFairBlindRevealRequest
+      summary: 由第二位管理员批准并联合完成公平盲签名揭示
+      x-course-priority: advanced
+      x-required-roles: [admin, teacher]
+      x-jwt: true
+      x-sensitive-fields: [revealed_identity, escrow_share, private_key]
+      parameters:
+        - $ref: "#/components/parameters/RevealRequestId"
+      responses:
+        "200":
+          description: 联合揭示结果；仅授权管理员可见并必须进入审计日志
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FairBlindRevealResult" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    refreshCookie:
+      type: apiKey
+      in: cookie
+      name: cc_refresh
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 16, maxLength: 128 }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    PageSize:
+      name: page_size
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    SessionId:
+      name: session_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    DropCode:
+      name: code
+      in: path
+      required: true
+      schema: { type: string, pattern: "^[A-Za-z0-9]{11,32}$" }
+    VoteId:
+      name: vote_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    UserId:
+      name: user_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    PostId:
+      name: post_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    SealId:
+      name: seal_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    RecordId:
+      name: record_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ChatSessionId:
+      name: chat_session_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    BenchmarkId:
+      name: benchmark_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    RevealRequestId:
+      name: reveal_request_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    Unauthorized:
+      description: 未认证、凭据错误或会话失效
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: 权限不足
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: 资源不存在或为防枚举隐藏存在性
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: 状态冲突、重复消费或幂等冲突
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ValidationError:
+      description: 字段校验失败
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: 额度或频率超限
+      headers:
+        Retry-After:
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    PayloadTooLarge:
+      description: 文件超过当前操作限制；密信文件的课程上限为 100 MiB
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ServiceUnavailable:
+      description: 密码引擎或 Provider 暂不可用
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    BadRequest:
+      description: 请求语义、密码材料或状态不合法
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    InternalError:
+      description: 后端或密码引擎内部错误；消息不得包含密钥、明文或原始堆栈
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Email:
+      type: string
+      format: email
+      maxLength: 254
+      description: 规范化为小写并去除首尾空白的校园邮箱
+    Role:
+      type: string
+      enum: [student, admin, teacher, system]
+    UserStatus:
+      type: string
+      enum: [active, frozen, pending_deletion]
+    Accepted:
+      type: object
+      additionalProperties: false
+      required: [accepted]
+      properties:
+        accepted: { const: true }
+    Error:
+      type: object
+      additionalProperties: false
+      required: [code, message, request_id, details]
+      properties:
+        code: { type: string, pattern: "^[A-Z][A-Z0-9_]+$" }
+        message: { type: string }
+        request_id: { type: string }
+        details: { type: object, additionalProperties: true }
+    RegisterRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password, verification_code]
+      properties:
+        email: { $ref: "#/components/schemas/Email" }
+        password: { type: string, minLength: 10, maxLength: 128, pattern: "^(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9]).{10,128}$", writeOnly: true }
+        verification_code: { type: string, pattern: "^[0-9]{6}$", writeOnly: true }
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password]
+      properties:
+        email: { $ref: "#/components/schemas/Email" }
+        password: { type: string, minLength: 1, maxLength: 128, writeOnly: true }
+        device_name: { type: string, maxLength: 100 }
+    AuthSession:
+      type: object
+      additionalProperties: false
+      required: [access_token, token_type, expires_in, user]
+      properties:
+        access_token: { type: string, minLength: 1, x-sensitive: true }
+        token_type: { const: bearer }
+        expires_in: { type: integer, const: 7200 }
+        user: { $ref: "#/components/schemas/User" }
+    User:
+      type: object
+      additionalProperties: false
+      required: [id, email, role, status, pqc_mode, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        email: { $ref: "#/components/schemas/Email" }
+        role: { $ref: "#/components/schemas/Role" }
+        status: { $ref: "#/components/schemas/UserStatus" }
+        pqc_mode: { type: boolean }
+        created_at: { type: string, format: date-time }
+    SystemStatus:
+      type: object
+      additionalProperties: false
+      required: [api, engine, version, tlcp, providers]
+      properties:
+        api: { type: string, enum: [ok, degraded] }
+        engine: { type: string, enum: [online, offline, degraded] }
+        version: { type: string }
+        tlcp: { type: string, enum: [online, offline, unknown] }
+        providers:
+          type: object
+          additionalProperties: { type: boolean }
+    KeyringItem:
+      type: object
+      additionalProperties: false
+      required: [kind, algorithm, fingerprint, status]
+      properties:
+        kind: { type: string, enum: [sm2_identity, certificate, ml_kem] }
+        algorithm: { type: string }
+        fingerprint: { type: string, description: SM3 指纹的脱敏展示 }
+        status: { type: string, enum: [active, expired, revoked, unavailable] }
+        expires_at: { type: [string, "null"], format: date-time }
+    KeyringSummary:
+      type: object
+      additionalProperties: false
+      required: [items, unlocked_until]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/KeyringItem" }
+        unlocked_until: { type: [string, "null"], format: date-time }
+    CertificateVerificationResponse:
+      type: object
+      additionalProperties: false
+      required: [valid, state, serial, verified_at]
+      properties:
+        valid: { type: boolean }
+        state: { type: string, enum: [active, expired, revoked, invalid] }
+        serial: { type: [string, "null"] }
+        verified_at: { type: string, format: date-time }
+    DeviceSession:
+      type: object
+      additionalProperties: false
+      required: [id, device, ip_masked, last_active_at, current]
+      properties:
+        id: { type: string, format: uuid }
+        device: { type: string }
+        ip_masked: { type: string }
+        last_active_at: { type: string, format: date-time }
+        current: { type: boolean }
+    Quota:
+      type: object
+      additionalProperties: false
+      required: [resource, used, limit]
+      properties:
+        resource: { type: string, enum: [hole_credential, interaction_credential, drop] }
+        used: { type: integer, minimum: 0 }
+        limit: { type: integer, minimum: 1 }
+    QuotaPage:
+      type: object
+      additionalProperties: false
+      required: [items, resets_at]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Quota" }
+        resets_at: { type: string, format: date-time }
+    TtlPolicy:
+      type: string
+      enum: [burn_after_read, hours_24, days_7]
+    CreateTextDropRequest:
+      type: object
+      additionalProperties: false
+      required: [content, ttl_policy, pqc_mode]
+      properties:
+        content: { type: string, minLength: 1, maxLength: 1048576 }
+        ttl_policy: { $ref: "#/components/schemas/TtlPolicy" }
+        pqc_mode: { type: boolean }
+        access_password: { type: string, minLength: 1, maxLength: 128, writeOnly: true }
+    CreateDropResponse:
+      type: object
+      additionalProperties: false
+      required: [id, code, access_code, url, expires_at, pqc_mode]
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string }
+        access_code: { type: string, minLength: 8, maxLength: 32, x-sensitive: true }
+        url: { type: string, format: uri-reference }
+        expires_at: { type: [string, "null"], format: date-time }
+        pqc_mode: { type: boolean }
+    DropMetadata:
+      type: object
+      additionalProperties: false
+      required: [code, kind, status, requires_password, burn_after_read, expires_at]
+      properties:
+        code: { type: string }
+        kind: { type: string, enum: [text, file] }
+        status: { type: string, enum: [available, consumed, expired, destroyed, cooling_down] }
+        requires_password: { type: boolean }
+        burn_after_read: { type: boolean }
+        filename: { type: [string, "null"] }
+        size: { type: [integer, "null"], minimum: 0 }
+        expires_at: { type: [string, "null"], format: date-time }
+    ExtractedDrop:
+      type: object
+      additionalProperties: false
+      required: [kind, signature_valid, certificate_valid, inspect_record_id]
+      properties:
+        kind: { type: string, enum: [text, file] }
+        content: { type: string, description: 仅文字密信返回 }
+        download_url: { type: string, format: uri-reference, description: 仅文件密信返回的短期一次性地址 }
+        signature_valid: { type: boolean }
+        certificate_valid: { type: boolean }
+        inspect_record_id: { type: string, format: uuid }
+    BlindCommitmentRequest:
+      type: object
+      additionalProperties: false
+      required: [service, period]
+      properties:
+        service: { type: string, enum: [hole_post, hole_comment, hole_like, vote_ballot] }
+        period: { type: string, minLength: 4, maxLength: 64 }
+    BlindCommitmentResponse:
+      type: object
+      additionalProperties: false
+      required: [commitment_id, commitment_point, expires_at, algorithm, signer_public_key]
+      properties:
+        commitment_id: { type: string }
+        commitment_point: { type: string, contentEncoding: base64 }
+        expires_at: { type: string, format: date-time }
+        algorithm: { const: SM2-BLIND-PROTOCOL-V1 }
+        signer_public_key: { type: string, contentEncoding: base64 }
+    BlindCredentialRequest:
+      type: object
+      additionalProperties: false
+      required: [service, period, blinded_message]
+      properties:
+        service: { type: string, enum: [hole_post, hole_comment, hole_like, vote_ballot] }
+        period: { type: string, maxLength: 64 }
+        blinded_message: { type: string, contentEncoding: base64 }
+    BlindCredentialResponse:
+      type: object
+      additionalProperties: false
+      required: [blind_signature, algorithm]
+      properties:
+        blind_signature: { type: string, contentEncoding: base64 }
+        algorithm: { const: SM2-BLIND-PROTOCOL-V1 }
+    CredentialProof:
+      type: object
+      additionalProperties: false
+      required: [sn, service, period, signature]
+      properties:
+        sn: { type: string, pattern: "^[A-Fa-f0-9]{32,}$" }
+        service: { type: string }
+        period: { type: string }
+        signature: { type: string, contentEncoding: base64 }
+    CreateHolePostRequest:
+      type: object
+      additionalProperties: false
+      required: [content, credential]
+      properties:
+        content: { type: string, minLength: 1, maxLength: 5000 }
+        credential: { $ref: "#/components/schemas/CredentialProof" }
+    HolePost:
+      type: object
+      additionalProperties: false
+      required: [id, content, credential_prefix, credential_valid, status, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        content: { type: string }
+        credential_prefix: { type: string }
+        credential_valid: { type: boolean }
+        status: { type: string, enum: [published, withdrawn] }
+        created_at: { type: string, format: date-time }
+    HolePostPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, page_size, total]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/HolePost" } }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer }
+    CreateVoteRequest:
+      type: object
+      additionalProperties: false
+      required: [title, options, scope, closes_at]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, maxLength: 2000 }
+        options:
+          type: array
+          minItems: 2
+          maxItems: 20
+          items:
+            type: object
+            additionalProperties: false
+            required: [label]
+            properties:
+              label: { type: string, minLength: 1, maxLength: 100 }
+        scope: { type: string, enum: [public, class, group] }
+        scope_id:
+          type: [string, "null"]
+          format: uuid
+          description: public 范围必须省略或为 null；class/group 范围必须提供同类型且当前用户属于其中的范围 ID。
+        closes_at: { type: string, format: date-time }
+    Vote:
+      type: object
+      additionalProperties: false
+      required: [id, title, options, scope, status, closes_at]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        options:
+          type: array
+          items:
+            type: object
+            required: [id, label]
+            properties:
+              id: { type: string, format: uuid }
+              label: { type: string }
+        scope: { type: string }
+        status: { type: string, enum: [open, closed, published] }
+        closes_at: { type: string, format: date-time }
+    VotePage:
+      type: object
+      additionalProperties: false
+      required: [items, page, page_size, total]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Vote" } }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer }
+    SubmitBallotRequest:
+      type: object
+      additionalProperties: false
+      required: [option_id, credential]
+      properties:
+        option_id: { type: string, format: uuid }
+        credential: { $ref: "#/components/schemas/CredentialProof" }
+    VoteResult:
+      type: object
+      additionalProperties: false
+      required: [vote_id, counts, total, signature, signer_certificate, published_at]
+      properties:
+        vote_id: { type: string, format: uuid }
+        counts:
+          type: object
+          additionalProperties: { type: integer, minimum: 0 }
+        total: { type: integer, minimum: 0 }
+        signature: { type: string, contentEncoding: base64 }
+        signer_certificate: { type: string, contentEncoding: base64 }
+        published_at: { type: string, format: date-time }
+    Seal:
+      type: object
+      additionalProperties: false
+      required: [id, digest_algorithm, digest, signature_algorithm, signature, certificate, timestamp]
+      properties:
+        id: { type: string, format: uuid }
+        digest_algorithm: { const: SM3 }
+        digest: { type: string, contentEncoding: base64 }
+        signature_algorithm: { type: string, enum: [SM3-with-SM2, ML-DSA-65] }
+        signature: { type: string, contentEncoding: base64 }
+        certificate: { type: string, contentEncoding: base64 }
+        timestamp: { type: string, format: date-time }
+    VerificationStep:
+      type: object
+      additionalProperties: false
+      required: [name, passed, message]
+      properties:
+        name: { type: string, enum: [digest, signature, certificate_chain, timestamp, revocation] }
+        passed: { type: boolean }
+        message: { type: string }
+    VerificationResult:
+      type: object
+      additionalProperties: false
+      required: [valid, steps, record_digest]
+      properties:
+        valid: { type: boolean }
+        steps: { type: array, items: { $ref: "#/components/schemas/VerificationStep" } }
+        record_digest: { type: string }
+    InspectStep:
+      type: object
+      additionalProperties: false
+      required: [order, name, algorithm, result, redacted_values]
+      properties:
+        order: { type: integer, minimum: 1 }
+        name: { type: string }
+        algorithm: { type: string }
+        result: { type: string, enum: [passed, failed, skipped] }
+        redacted_values: { type: object, additionalProperties: true }
+    InspectRecord:
+      type: object
+      additionalProperties: false
+      required: [id, operation, owner, steps, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        operation: { type: string }
+        owner: { type: string, enum: [self, other, system] }
+        steps: { type: array, items: { $ref: "#/components/schemas/InspectStep" } }
+        created_at: { type: string, format: date-time }
+    Job:
+      type: object
+      additionalProperties: false
+      required: [id, status, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [queued, running, completed, failed] }
+        created_at: { type: string, format: date-time }
+
+    Notification:
+      type: object
+      additionalProperties: false
+      required: [id, type, title, read, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string, enum: [drop_extracted, security, system] }
+        title: { type: string, minLength: 1, maxLength: 200 }
+        related_resource_id: { type: [string, "null"] }
+        read: { type: boolean }
+        created_at: { type: string, format: date-time }
+    NotificationPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, page_size, total]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Notification" } }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1 }
+        total: { type: integer, minimum: 0 }
+    CredentialVerification:
+      type: object
+      additionalProperties: false
+      required: [valid, service, period, consumed, revoked]
+      properties:
+        valid: { type: boolean }
+        service: { type: string, enum: [hole_post, hole_comment, hole_like, vote_ballot] }
+        period: { type: string }
+        consumed: { type: boolean }
+        revoked: { type: boolean }
+    CreateHoleCommentRequest:
+      type: object
+      additionalProperties: false
+      required: [content, credential]
+      properties:
+        content: { type: string, minLength: 1, maxLength: 2000 }
+        credential: { $ref: "#/components/schemas/CredentialProof" }
+    HoleComment:
+      type: object
+      additionalProperties: false
+      required: [id, post_id, content, credential_prefix, credential_valid, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        post_id: { type: string, format: uuid }
+        content: { type: string }
+        credential_prefix: { type: string }
+        credential_valid: { type: boolean }
+        created_at: { type: string, format: date-time }
+    HoleCommentPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, page_size, total]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/HoleComment" } }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1 }
+        total: { type: integer, minimum: 0 }
+    RevocationEntry:
+      type: object
+      additionalProperties: false
+      required: [sn, reason, hash_prev, hash_curr, timestamp]
+      properties:
+        sn: { type: string, pattern: "^[A-Fa-f0-9]{32,}$" }
+        reason: { type: string, maxLength: 500 }
+        hash_prev: { type: string, contentEncoding: base64 }
+        hash_curr: { type: string, contentEncoding: base64 }
+        timestamp: { type: string, format: date-time }
+    RevocationPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, page_size, total]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/RevocationEntry" } }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1 }
+        total: { type: integer, minimum: 0 }
+    SignatureVerification:
+      type: object
+      additionalProperties: false
+      required: [valid, algorithm, certificate_valid, message]
+      properties:
+        valid: { type: boolean }
+        algorithm: { type: string, enum: [SM3-with-SM2, ML-DSA-65] }
+        certificate_valid: { type: boolean }
+        message: { type: string }
+    VoteAuditBallot:
+      type: object
+      additionalProperties: false
+      required: [sn, signature, valid]
+      properties:
+        sn: { type: string, pattern: "^[A-Fa-f0-9]{32,}$" }
+        signature: { type: string, contentEncoding: base64 }
+        valid: { type: boolean }
+    VoteAuditReport:
+      type: object
+      additionalProperties: false
+      required: [vote_id, ballots, total, result_signature]
+      properties:
+        vote_id: { type: string, format: uuid }
+        ballots: { type: array, items: { $ref: "#/components/schemas/VoteAuditBallot" } }
+        total: { type: integer, minimum: 0 }
+        result_signature: { type: string, contentEncoding: base64 }
+    ChatSession:
+      type: object
+      additionalProperties: false
+      required: [id, peer_user_id, pqc_mode, key_agreement, peer_key_bundle, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        peer_user_id: { type: string, format: uuid }
+        pqc_mode: { type: boolean }
+        key_agreement: { type: string, enum: [SM2-ECDH, X25519-ML-KEM-768] }
+        peer_key_bundle:
+          type: object
+          additionalProperties: false
+          required: [sm2_certificate]
+          properties:
+            sm2_certificate: { type: string, contentEncoding: base64 }
+            ml_kem_public_key: { type: [string, "null"], contentEncoding: base64 }
+        created_at: { type: string, format: date-time }
+    EncryptedMessage:
+      type: object
+      additionalProperties: false
+      required: [type, id, session_id, sender_id, sequence, ciphertext, nonce, tag, signature, created_at]
+      properties:
+        type: { const: encrypted_message }
+        id: { type: string, format: uuid }
+        session_id: { type: string, format: uuid }
+        sender_id: { type: string, format: uuid }
+        sequence: { type: integer, minimum: 1 }
+        ciphertext: { type: string, contentEncoding: base64 }
+        nonce: { type: string, contentEncoding: base64 }
+        tag: { type: string, contentEncoding: base64 }
+        signature: { type: string, contentEncoding: base64 }
+        created_at: { type: string, format: date-time }
+    EncryptedMessagePage:
+      type: object
+      additionalProperties: false
+      required: [items, page, page_size, total]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/EncryptedMessage" } }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1 }
+        total: { type: integer, minimum: 0 }
+    ChatClientFrame:
+      oneOf:
+        - $ref: "#/components/schemas/ChatHandshakeInput"
+        - $ref: "#/components/schemas/ChatEncryptedMessageInput"
+    ChatServerFrame:
+      oneOf:
+        - $ref: "#/components/schemas/ChatHandshakeRelay"
+        - $ref: "#/components/schemas/EncryptedMessage"
+        - $ref: "#/components/schemas/ChatErrorFrame"
+    ChatHandshakeInput:
+      type: object
+      additionalProperties: false
+      required: [type, session_id, payload]
+      properties:
+        type: { const: handshake }
+        session_id: { type: string, format: uuid }
+        payload: { type: string, contentEncoding: base64, maxLength: 10924, description: 仅转发公开临时公钥或 KEM 密文，解码后不超过 8192 字节 }
+    ChatHandshakeRelay:
+      type: object
+      additionalProperties: false
+      required: [type, session_id, sender_id, payload]
+      properties:
+        type: { const: handshake }
+        session_id: { type: string, format: uuid }
+        sender_id: { type: string, format: uuid }
+        payload: { type: string, contentEncoding: base64, maxLength: 10924 }
+    ChatEncryptedMessageInput:
+      type: object
+      additionalProperties: false
+      required: [type, session_id, sequence, ciphertext, nonce, tag, signature]
+      properties:
+        type: { const: encrypted_message }
+        session_id: { type: string, format: uuid }
+        sequence: { type: integer, minimum: 1 }
+        ciphertext: { type: string, contentEncoding: base64, maxLength: 87384, description: 解码后 1 至 65536 字节 }
+        nonce: { type: string, contentEncoding: base64, description: 解码后固定 12 字节 }
+        tag: { type: string, contentEncoding: base64, description: 解码后固定 16 字节 }
+        signature: { type: string, contentEncoding: base64, maxLength: 5464, description: 解码后 1 至 4096 字节；服务端不验签 }
+    ChatErrorFrame:
+      type: object
+      additionalProperties: false
+      required: [type, code, message]
+      properties:
+        type: { const: error }
+        code:
+          type: string
+          enum: [INVALID_FRAME, FORBIDDEN, DUPLICATE_SEQUENCE, INTERNAL_ERROR]
+        message: { type: string, maxLength: 128 }
+    InspectRecordPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, page_size, total]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/InspectRecord" } }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1 }
+        total: { type: integer, minimum: 0 }
+    InspectMetadata:
+      type: object
+      additionalProperties: false
+      required: [id, operation, owner_user_id, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        operation: { type: string }
+        owner_user_id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+    InspectMetadataPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, page_size, total]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/InspectMetadata" } }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1 }
+        total: { type: integer, minimum: 0 }
+    ExperimentRequest:
+      type: object
+      additionalProperties: false
+      required: [experiment, input]
+      properties:
+        experiment:
+          type: string
+          enum: [sm4_mode_compare, sm3_avalanche, sm2_curve, ecdh, ml_kem, ml_dsa, kat]
+        input:
+          type: string
+          maxLength: 1048576
+          description: 仅课程试验数据，不得提交真实业务明文或密钥
+    ExperimentResult:
+      type: object
+      additionalProperties: false
+      required: [experiment, passed, steps, redacted_values]
+      properties:
+        experiment: { type: string }
+        passed: { type: boolean }
+        steps: { type: array, items: { type: string } }
+        redacted_values: { type: object, additionalProperties: true }
+    TlcpHandshake:
+      type: object
+      additionalProperties: false
+      required: [protocol, cipher_suite, signing_certificate, encryption_certificate, messages]
+      properties:
+        protocol: { const: TLCP }
+        cipher_suite: { type: string }
+        signing_certificate: { type: string, description: 脱敏证书摘要 }
+        encryption_certificate: { type: string, description: 脱敏证书摘要 }
+        messages: { type: array, items: { type: string } }
+    UserPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, page_size, total]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/User" } }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1 }
+        total: { type: integer, minimum: 0 }
+    BenchmarkMetric:
+      type: object
+      additionalProperties: false
+      required: [operation, mean_ms, p99_ms]
+      properties:
+        operation: { type: string }
+        mean_ms: { type: number, minimum: 0 }
+        p99_ms: { type: number, minimum: 0 }
+        pqc_overhead_percent: { type: [number, "null"] }
+    BenchmarkResult:
+      type: object
+      additionalProperties: false
+      required: [id, status, metrics, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [queued, running, completed, failed] }
+        metrics: { type: array, items: { $ref: "#/components/schemas/BenchmarkMetric" } }
+        created_at: { type: string, format: date-time }
+    AuditEntry:
+      type: object
+      additionalProperties: false
+      required: [actor_id, action, target, detail_hash, hash_prev, hash_curr, timestamp]
+      properties:
+        actor_id: { type: string, format: uuid }
+        action: { type: string }
+        target: { type: string }
+        detail_hash: { type: string, contentEncoding: base64 }
+        hash_prev: { type: string, contentEncoding: base64 }
+        hash_curr: { type: string, contentEncoding: base64 }
+        timestamp: { type: string, format: date-time }
+    FairBlindRevealRequest:
+      type: object
+      additionalProperties: false
+      required: [id, credential_sn, requester_id, status, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        credential_sn: { type: string, pattern: "^[A-Fa-f0-9]{32,}$" }
+        requester_id: { type: string, format: uuid }
+        status: { type: string, enum: [pending_second_approval, approved, rejected] }
+        created_at: { type: string, format: date-time }
+    FairBlindRevealResult:
+      type: object
+      additionalProperties: false
+      required: [request_id, revealed_user_id, approved_by, revealed_at]
+      properties:
+        request_id: { type: string, format: uuid }
+        revealed_user_id: { type: string, format: uuid, description: 仅公平盲签名进阶模式可返回 }
+        approved_by:
+          type: array
+          minItems: 2
+          maxItems: 2
+          uniqueItems: true
+          items: { type: string, format: uuid }
+        revealed_at: { type: string, format: date-time }
+
+security:
+  - bearerAuth: []
